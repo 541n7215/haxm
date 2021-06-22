@@ -31,6 +31,7 @@
 #ifndef HAX_CORE_VCPU_H_
 #define HAX_CORE_VCPU_H_
 
+#include "cpuid.h"
 #include "emulate.h"
 #include "vmx.h"
 #include "mtrr.h"
@@ -41,9 +42,18 @@
 
 #define NR_GMSR     5
 #define NR_EMT64MSR 6
+// The number of MSRs to be loaded on VM entries
+// Currently the MSRs list only supports automatic loading of below MSRs, the
+// total count of which is 14.
+// * IA32_PMCx
+// * IA32_PERFEVTSELx
+// * IA32_TSC_AUX
+// * all MSRs defined in gmsr_list[]
+#define NR_GMSR_AUTOLOAD 14
 
 struct gstate {
     struct vmx_msr gmsr[NR_GMSR];
+    vmx_msr_entry gmsr_autoload[NR_GMSR_AUTOLOAD];
     // IA32_PMCx, since APM v1
     uint64_t apm_pmc_msrs[APM_MAX_GENERAL_COUNT];
     // IA32_PERFEVTSELx, since APM v1
@@ -55,17 +65,6 @@ struct gstate {
     uint64_t apic_base;
 };
 
-struct cvtlb {
-    hax_vaddr_t va;
-    hax_paddr_t ha;
-    uint64_t flags;
-    uint guest_order;
-    uint order;
-    uint access;
-    uint flag;
-};
-
-struct hax_mmu;
 struct per_cpu_data;
 
 struct vcpu_vmx_data {
@@ -169,9 +168,7 @@ struct vcpu_t {
     hax_mutex tmutex;
 
     struct vm_t *vm;
-    struct hax_mmu *mmu;
     struct vcpu_state_t *state;
-    uint64_t _cr8;
     struct hax_tunnel *tunnel;
     uint8_t *io_buf;
     struct hax_page *vmcs_page;
@@ -190,7 +187,6 @@ struct vcpu_t {
         uint64_t vmcs_pending_entry_error_code   : 1;
         uint64_t vmcs_pending_entry_instr_length : 1;
         uint64_t vmcs_pending_entry_intr_info    : 1;
-        uint64_t vmcs_pending_guest_cr3          : 1;
         uint64_t debug_control_dirty             : 1;
         uint64_t dr_dirty                        : 1;
         uint64_t rflags_dirty                    : 1;
@@ -199,7 +195,7 @@ struct vcpu_t {
         uint64_t interruptibility_dirty          : 1;
         uint64_t pcpu_ctls_dirty                 : 1;
         uint64_t pae_pdpt_dirty                  : 1;
-        uint64_t padding                         : 45;
+        uint64_t padding                         : 46;
     };
 
     /* For TSC offseting feature*/
@@ -217,7 +213,6 @@ struct vcpu_t {
     uint64_t pae_pdptes[4];
 
     uint64_t cr_pat;
-    uint64_t cpuid_features_flag_mask;
 
     /* Debugging */
     uint32_t debug_control;
@@ -229,11 +224,18 @@ struct vcpu_t {
     struct gstate gstate;
     struct hax_vcpu_mem *tunnel_vcpumem;
     struct hax_vcpu_mem *iobuf_vcpumem;
-    struct cvtlb prefetch[16];
 
     struct em_context_t emulate_ctxt;
     struct vcpu_post_mmio post_mmio;
     struct mmio_fetch_cache mmio_fetch;
+
+    // Guest CPUID feature set
+    // * The CPUID feature set is always same for each vCPU. A CPUID instruction
+    //   executed on any core will get the same result.
+    // * All vCPUs share the unique memory, which is actually allocated by the
+    //   first vCPU created by VM. If any vCPU sets features in this field, all
+    //   vCPUs will change accordingly.
+    hax_cpuid_t *guest_cpuid;
 };
 
 #define vmx(v, field) v->vmx.field
@@ -245,11 +247,10 @@ void vcpu_save_guest_state(struct vcpu_t *vcpu);
 void vcpu_load_host_state(struct vcpu_t *vcpu);
 void vcpu_save_host_state(struct vcpu_t *vcpu);
 
-int vtlb_active(struct vcpu_t *vcpu);
 int vcpu_vmexit_handler(struct vcpu_t *vcpu, exit_reason_t exit_reason,
                         struct hax_tunnel *htun);
 void vcpu_vmread_all(struct vcpu_t *vcpu);
-void vcpu_vmwrite_all(struct vcpu_t *vcpu, int force_vtlb_flush);
+void vcpu_vmwrite_all(struct vcpu_t *vcpu);
 
 int vcpu_teardown(struct vcpu_t *vcpu);
 
@@ -259,7 +260,8 @@ int vcpu_get_fpu(struct vcpu_t *vcpu, struct fx_layout *fl);
 int vcpu_put_fpu(struct vcpu_t *vcpu, struct fx_layout *fl);
 int vcpu_get_msr(struct vcpu_t *vcpu, uint64_t entry, uint64_t *val);
 int vcpu_put_msr(struct vcpu_t *vcpu, uint64_t entry, uint64_t val);
-int vcpu_get_state_size(struct vcpu_t *vcpu);
+int vcpu_set_cpuid(struct vcpu_t *vcpu, hax_cpuid *cpuid_info);
+int vcpu_get_cpuid(struct vcpu_t *vcpu, hax_cpuid *cpuid_info);
 void vcpu_debug(struct vcpu_t *vcpu, struct hax_debug_t *debug);
 
 /* The declaration for OS wrapper code */

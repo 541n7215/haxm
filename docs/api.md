@@ -97,6 +97,7 @@ itself as well as the host environment.
   #define HAX_CAP_TUNNEL_PAGE        (1 << 5)
   #define HAX_CAP_DEBUG              (1 << 7)
   #define HAX_CAP_IMPLICIT_RAMBLOCK  (1 << 8)
+  #define HAX_CAP_CPUID              (1 << 9)
   ```
   * (Output) `wstatus`: The first set of capability flags reported to the
 caller. The following bits may be set, while others are reserved:
@@ -124,6 +125,7 @@ feature.
     * `HAX_CAP_64BIT_SETRAM`: If set, `HAX_VM_IOCTL_SET_RAM2` is available.
     * `HAX_CAP_IMPLICIT_RAMBLOCK`: If set, `HAX_VM_IOCTL_SET_RAM2` supports the
 `HAX_RAM_INFO_STANDALONE` flag.
+    * `HAX_CAP_CPUID`: If set, `HAX_VCPU_IOCTL_SET_CPUID` is available.
   * (Output) `win_refcount`: (Windows only)
   * (Output) `mem_quota`: If the global memory cap setting is enabled (q.v.
 `HAX_IOCTL_SET_MEMLIMIT`), reports the current quota on memory allocation (the
@@ -689,3 +691,132 @@ Injects an interrupt into this VCPU.
 * Error codes:
   * `STATUS_INVALID_PARAMETER` (Windows): The input buffer provided by the
 caller is smaller than the size of `uint32_t`.
+
+#### HAX\_VCPU\_IOCTL\_SET\_CPUID
+Defines the VCPU responses to the CPU identification (CPUID) instructions.
+
+HAXM initializes a minimal feature set for guest VCPUs in kernel space. This
+ensures that most modern CPUs can support these basic CPUID features. Only the
+supported CPUID instructions in the feature set will be passed to the physical
+CPU for processing.
+
+This IOCTL is used to dynamically adjust the supported feature set of CPUID for
+guest VCPUs so as to leverage the latest features from modern CPUs. The features
+to be enabled will be incorporated into the feature set, while the features to
+be disabled will be removed. If the physical CPU does not support some specified
+CPUID features, the enabling operation will be ignored. Usually, this IOCTL is
+invoked when the VM is initially configured.
+
+All VCPUs share the same feature set in a VM. This can avoid confusion caused by
+the case that when VCPU has multiple cores, different VCPUs executing the same
+instruction will produce different results. Send this IOCTL to any VCPU to set
+CPUID features, then all VCPUs will change accordingly.
+
+* Since: Capability `HAX_CAP_CPUID`
+* Parameter: `struct hax_cpuid cpuid`, where
+  ```
+  struct hax_cpuid {
+      uint32_t total;
+      uint32_t pad;
+      hax_cpuid_entry entries[0];
+  } __attribute__ ((__packed__));
+  ```
+  where
+  ```
+  #define HAX_MAX_CPUID_ENTRIES 0x40
+  struct hax_cpuid_entry {
+      uint32_t function;
+      uint32_t index;
+      uint32_t flags;
+      uint32_t eax;
+      uint32_t ebx;
+      uint32_t ecx;
+      uint32_t edx;
+      uint32_t pad[3];
+  } __attribute__ ((__packed__));
+  ```
+  `hax_cpuid` is a variable-length type. The accessible memory of `entries` is
+  decided by the actual allocation from user space. For macOS, the argument of
+  user data should pass the address of the pointer to `hax_cpuid` when `ioctl()`
+  is invoked.
+  * (Input) `total`: Number of CPUIDs in entries. The valid value should be in
+the range (0, `HAX_MAX_CPUID_ENTRIES`].
+  * (Input) `pad`: Ignored.
+  * (Input) `entries`: Array of `struct hax_cpuid_entry`. This array contains
+the CPUID feature set of the guest VCPU that is pre-configured by the VM in user
+space.
+
+  For each entry in `struct hax_cpuid_entry`
+  * (Input) `function`: CPUID function code, i.e., initial EAX value.
+  * (Input) `index`: Sub-leaf index.
+  * (Input) `flags`: Feature flags.
+  * (Input) `eax`: EAX register value.
+  * (Input) `ebx`: EBX register value.
+  * (Input) `ecx`: ECX register value.
+  * (Input) `edx`: EDX register value.
+  * (Input) `pad`: Ignored.
+* Error codes:
+  * `STATUS_INVALID_PARAMETER` (Windows): The input buffer provided by the
+caller is smaller than the size of `struct hax_cpuid`.
+  * `STATUS_UNSUCCESSFUL` (Windows): Failed to set CPUID features.
+  * `-E2BIG` (macOS): The input value of `total` is greater than
+`HAX_MAX_CPUID_ENTRIES`.
+  * `-EFAULT` (macOS): Failed to copy contents in `entries` to the memory in
+kernel space.
+
+#### HAX\_VCPU\_IOCTL\_GET\_CPUID
+Retrieves the VCPU responses to the CPU identification (CPUID) instructions.
+
+HAXM initializes a minimal feature set for guest VCPUs in kernel space. Only the
+CPUID instructions supported by HAXM will be emulated and cached during the
+initialization phase. When the guest VCPU executes these CPUID instructions,
+these cached values ​​will be returned as the execution result.
+
+This IOCTL is used to retrieve all supported CPUID features set and cached
+values ​​of each instruction register. When the VCPUs are initialized, invoking
+this IOCTL will return the default CPUID features set of HAXM; after having
+invoked the IOCTL `HAX_VCPU_IOCTL_SET_CPUID`, invoking this IOCTL will return
+the most recently set CPUID features set.
+
+The parameter `struct hax_cpuid` of this IOCTL is a variable-length type, so it
+is required to allocate sufficient buffer before retrieving the CPUID features
+set. Usually, the CPUID features set is retrieved by invoking this IOCTL twice
+consecutively. The first time, directly pass in the variable address of
+`hax_cpuid` and specify the member `total` as 0 to retrieve the total number of
+supported CPUIDs; the second time, first allocate an extra buffer of
+`total * sizeof(hax_cpuid_entry)` bytes for the variable-length array `entries`,
+and specify `total` as the number of array elements, then the whole CPUID
+features set can be retrived.
+
+Since All VCPUs share the same feature set in a VM, send this IOCTL to any VCPU
+to retrieve CPUID features set, the results are all the same.
+
+* Since: Capability `HAX_CAP_CPUID`
+* Parameter: `struct hax_cpuid cpuid`, (q.v. `HAX_VCPU_IOCTL_SET_CPUID`)
+  * (Input/Output) `total`: Number of CPUIDs in `entries`. The valid value
+should be in the range [0, `HAX_MAX_CPUID_ENTRIES`]. If this parameter is set to
+0, it outputs the total number of CPUID features supported by HAXM and the IOCTL
+makes no use of the output parameter `entries`.
+  * (Output) `pad`: Ignored.
+  * (Output) `entries`: Array of `struct hax_cpuid_entry`. The array requires to
+allocate sufficient buffer to receive the CPUID features set supported by HAXM.
+The actual size of the array is indicated by `total`. If `total` is 0, it is not
+necessary to allocate any extra buffer for the array.
+
+  For each entry in `struct hax_cpuid_entry`
+  * (Output) `function`: CPUID function code, i.e., initial EAX value.
+  * (Output) `index`: Sub-leaf index.
+  * (Output) `flags`: Feature flags.
+  * (Output) `eax`: EAX register value.
+  * (Output) `ebx`: EBX register value.
+  * (Output) `ecx`: ECX register value.
+  * (Output) `edx`: EDX register value.
+  * (Output) `pad`: Ignored.
+* Error codes:
+  * `STATUS_INVALID_PARAMETER` (Windows): The input buffer provided by the
+caller is smaller than the size of `struct hax_cpuid`.
+  * `STATUS_UNSUCCESSFUL` (Windows): Failed to get CPUID features.
+  * `-E2BIG` (macOS): The input value of `total` is greater than
+`HAX_MAX_CPUID_ENTRIES`.
+  * `-EFAULT` (macOS): Failed to copy contents in `entries` to the memory in
+kernel space.

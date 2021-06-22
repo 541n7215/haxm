@@ -36,13 +36,8 @@
 #include "include/debug.h"
 #include "include/dump.h"
 #include "include/name.h"
-#include "include/vtlb.h"
 #include "include/intr.h"
 #include "include/ept.h"
-
-static cpuid_cache_t cache = {
-    .initialized = 0
-};
 
 static void cpu_vmentry_failed(struct vcpu_t *vcpu, vmx_result_t result);
 static int cpu_vmexit_handler(struct vcpu_t *vcpu, exit_reason_t exit_reason,
@@ -66,15 +61,7 @@ static int cpu_nx_enable(void)
 
 bool cpu_has_feature(uint32_t feature)
 {
-    if (!cache.initialized) {
-        cpuid_host_init(&cache);
-    }
-    return cpuid_host_has_feature(&cache, feature);
-}
-
-void cpu_init_feature_cache(void)
-{
-    cpuid_host_init(&cache);
+    return cpuid_host_has_feature(feature);
 }
 
 void cpu_init_vmx(void *arg)
@@ -339,12 +326,7 @@ void vcpu_handle_vmcs_pending(struct vcpu_t *vcpu)
         vcpu->vmcs_pending_entry_intr_info = 0;
     }
 
-    if (vcpu->vmcs_pending_guest_cr3) {
-        vmwrite(vcpu, GUEST_CR3, vtlb_get_cr3(vcpu));
-        vcpu->vmcs_pending_guest_cr3 = 0;
-    }
     vcpu->vmcs_pending = 0;
-    return;
 }
 
 /* Return the value same as ioctl value */
@@ -645,7 +627,7 @@ void load_vmcs_common(struct vcpu_t *vcpu)
         vmwrite(vcpu, VMX_TSC_OFFSET, vcpu->tsc_offset);
 
     vmwrite(vcpu, GUEST_ACTIVITY_STATE, vcpu->state->_activity_state);
-    vcpu_vmwrite_all(vcpu, 0);
+    vcpu_vmwrite_all(vcpu);
 }
 
 

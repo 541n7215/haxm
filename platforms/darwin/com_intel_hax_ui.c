@@ -79,6 +79,44 @@ static int hax_vcpu_major = 0;
 #define HAX_VM_DEVFS_FMT_COMPAT   "hax_vm*/vm%02d"
 #define HAX_VM_DEVFS_FMT          "hax_vm/vm%02d"
 
+#define load_user_data(dest, src, body_len, body_max, arg_t, body_t)          \
+        user_addr_t uaddr = (user_addr_t)(*(arg_t **)(src));                  \
+        size_t size;                                                          \
+        arg_t header;                                                         \
+        (dest) = NULL;                                                        \
+        if (copyin(uaddr, &header, sizeof(arg_t))) {                          \
+            hax_log(HAX_LOGE, "%s: argument header read error.\n", __func__); \
+            ret = -EFAULT;                                                    \
+            break;                                                            \
+        }                                                                     \
+        if (header.body_len > (body_max)) {                                   \
+            hax_log(HAX_LOGW, "%s: %d exceeds argument body maximum %d.\n",   \
+                    __func__, header.body_len, (body_max));                   \
+            ret = -E2BIG;                                                     \
+            break;                                                            \
+        }                                                                     \
+        size = sizeof(arg_t) + header.body_len * sizeof(body_t);              \
+        (dest) = hax_vmalloc(size, HAX_MEM_NONPAGE);                          \
+        if ((dest) == NULL) {                                                 \
+            hax_log(HAX_LOGE, "%s: failed to allocate memory.\n", __func__);  \
+            ret = -ENOMEM;                                                    \
+            break;                                                            \
+        }                                                                     \
+        if (copyin(uaddr, (dest), size)) {                                    \
+            hax_log(HAX_LOGE, "%s: argument read error.\n", __func__);        \
+            unload_user_data(dest, false);                                    \
+            ret = -EFAULT;                                                    \
+            break;                                                            \
+        }
+
+#define unload_user_data(dest, overwrite)                                     \
+        if ((overwrite) && copyout((dest), uaddr, size)) {                    \
+            hax_log(HAX_LOGE, "%s: failed to write data back.\n", __func__);  \
+            ret = -EFAULT;                                                    \
+        }                                                                     \
+        if ((dest) != NULL)                                                   \
+            hax_vfree((dest), size);
+
 static void handle_unknown_ioctl(dev_t dev, ulong cmd, struct proc *p);
 
 static struct vcpu_t * get_vcpu_by_dev(dev_t dev) {
@@ -241,6 +279,22 @@ static int hax_vcpu_ioctl(dev_t dev, ulong cmd, caddr_t data, int flag,
             struct hax_debug_t *hax_debug;
             hax_debug = (struct hax_debug_t *)data;
             vcpu_debug(cvcpu, hax_debug);
+            break;
+        }
+        case HAX_VCPU_IOCTL_SET_CPUID: {
+            struct hax_cpuid *cpuid;
+            load_user_data(cpuid, data, total, HAX_MAX_CPUID_ENTRIES, hax_cpuid,
+                           hax_cpuid_entry);
+            ret = vcpu_set_cpuid(cvcpu, cpuid);
+            unload_user_data(cpuid, false);
+            break;
+        }
+        case HAX_VCPU_IOCTL_GET_CPUID: {
+            struct hax_cpuid *cpuid;
+            load_user_data(cpuid, data, total, HAX_MAX_CPUID_ENTRIES, hax_cpuid,
+                           hax_cpuid_entry);
+            ret = vcpu_get_cpuid(cvcpu, cpuid);
+            unload_user_data(cpuid, true);
             break;
         }
         default: {

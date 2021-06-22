@@ -258,7 +258,7 @@ NTSTATUS HaxVcpuControl(PDEVICE_OBJECT DeviceObject,
     PCHAR               inBuf, outBuf; // pointer to Input and output buffer
     uint32_t vcpu_id, vm_id;
     struct vcpu_t *cvcpu;
-    int infret = 0;
+    int infret = 0, err;
     struct hax_vcpu_windows *vcpu = ext;
     PIO_STACK_LOCATION  irpSp;// Pointer to current stack location
 
@@ -387,7 +387,7 @@ NTSTATUS HaxVcpuControl(PDEVICE_OBJECT DeviceObject,
         }
         case HAX_VCPU_SET_REGS: {
             struct vcpu_state_t *vc_state;
-            if (inBufLength < vcpu_get_state_size(cvcpu)) {
+            if(inBufLength < sizeof(struct vcpu_state_t)) {
                 ret = STATUS_INVALID_PARAMETER;
                 goto done;
             }
@@ -398,8 +398,7 @@ NTSTATUS HaxVcpuControl(PDEVICE_OBJECT DeviceObject,
         }
         case HAX_VCPU_GET_REGS: {
             struct vcpu_state_t *vc_state;
-            infret = vcpu_get_state_size(cvcpu);
-            if (outBufLength < infret) {
+            if(outBufLength < sizeof(struct vcpu_state_t)) {
                 ret = STATUS_INVALID_PARAMETER;
                 goto done;
 
@@ -407,6 +406,7 @@ NTSTATUS HaxVcpuControl(PDEVICE_OBJECT DeviceObject,
             vc_state = (struct vcpu_state_t *)outBuf;
             // vcpu_get_regs() cannot fail
             vcpu_get_regs(cvcpu, vc_state);
+            infret = sizeof(struct vcpu_state_t);
             break;
         }
         case HAX_VCPU_IOCTL_INTERRUPT: {
@@ -429,6 +429,39 @@ NTSTATUS HaxVcpuControl(PDEVICE_OBJECT DeviceObject,
                 goto done;
             }
             vcpu_debug(cvcpu, (struct hax_debug_t*)inBuf);
+            break;
+        }
+        case HAX_VCPU_IOCTL_SET_CPUID: {
+            hax_cpuid *cpuid = (hax_cpuid *)inBuf;
+            if (inBufLength < sizeof(hax_cpuid) || inBufLength <
+                    sizeof(hax_cpuid) + cpuid->total *
+                    sizeof(hax_cpuid_entry)) {
+                ret = STATUS_INVALID_PARAMETER;
+                goto done;
+            }
+            if (vcpu_set_cpuid(cvcpu, cpuid)) {
+                ret = STATUS_UNSUCCESSFUL;
+            }
+            break;
+        }
+        case HAX_VCPU_IOCTL_GET_CPUID: {
+            hax_cpuid *cpuid = (hax_cpuid *)outBuf;
+            if (outBufLength < sizeof(hax_cpuid) || outBufLength <
+                    sizeof(hax_cpuid) + cpuid->total *
+                    sizeof(hax_cpuid_entry)) {
+                ret = STATUS_INVALID_PARAMETER;
+                goto done;
+            }
+            err = vcpu_get_cpuid(cvcpu, cpuid);
+            if (err == -EINVAL) {
+                ret = STATUS_UNSUCCESSFUL;
+                break;
+            }
+            if (err == -ENOMEM) {
+                infret = sizeof(hax_cpuid);
+                break;
+            }
+            infret = sizeof(hax_cpuid) + cpuid->total * sizeof(hax_cpuid_entry);
             break;
         }
         default:
